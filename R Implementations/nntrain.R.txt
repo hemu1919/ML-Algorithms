@@ -1,0 +1,123 @@
+nntrain <- function(file_path,nodes=10,iter=50,split=60) {
+	data <- read.csv(file_path, header=TRUE, stringsAsFactors=FALSE)
+	label <- data[,ncol(data)]
+	data <- data[,1:ncol(data)-1]
+	levels <- 1
+	tmp <- length(unique(label))
+	step <- c(0.0001, 0.01)
+	newList <- preprocess(data)
+	data <- newList$data
+	newList <- newList$attr_info
+	nodes <- c(ncol(data),nodes,tmp)
+	c <- sample(1:nrow(data),split*nrow(data)/100,replace=F)
+	train_data <- data[c,]
+	train_label <- label[c]
+	c <- setdiff(1:nrow(data),c)
+	valid_data <- data[c,]
+	valid_label <- label[c]
+	model <- list("levels" = levels+2,"labels" = unique(train_label),"LevelsInfo" = newList)
+	for(i in (2:(levels+2))) {
+		level <- list("count" = nodes[i],"step" = step[i-1])
+		level$weights <- list()
+		for(j in (1:nodes[i]))
+			level$weights[[paste("node",j)]] <- dnorm(rnorm(1+nodes[i-1]))
+		model[[paste("level",i)]] <- level
+	}
+	object <- build(model,iter,train_data,train_label)
+	train_accuracy <- sum((train_label==nnpredict(model,train_data))*1)/length(train_label)
+	valid_accuracy <- sum((valid_label==nnpredict(model,valid_data))*1)/length(valid_label)
+	print(paste("The Training Accuracy is:",train_accuracy))
+	print(paste("The Validating Accuracy is:",valid_accuracy))
+	print(paste("The Difference in errors (training & validating):",(train_accuracy-valid_accuracy)))
+	return(object)
+}
+
+build <- function(model,iter,train_data,train_label) {
+	runtime <- c()
+	for(iter_count in (1:iter)) {
+		for(i in (1:nrow(train_data))) {
+			y <- vector(,model[[paste("level",model$levels)]][["count"]])*1
+			y[grep(train_label[i],model$labels)]=1
+			activations <- list("level 1" = c(1,as.integer(train_data[i,])))
+			for(j in (2:model$levels)) {
+				level <- model[[paste("level",j)]]
+				a1 <- vector(,level$count+1)*1
+				a1[1] <- 1
+				for(k in (1:level$count))
+					#c(a1, activation(activations[[paste("level",j-1)]], level$weights[[paste("node",k)]]))
+					a1[k+1] <- activation(activations[[paste("level",j-1)]], level$weights[[paste("node",k)]])
+				activations[[paste("level",j)]] <- a1					
+			}
+			tmp <- activations[[paste("level",model$levels)]]
+			error <- sum((y-tmp[2:length(tmp)])^2)/2
+			derivatives <- list("entry 1" = -(y-tmp[2:length(tmp)]))
+			interval1 <- 0
+			for(j in (model$levels:2)) {
+				level <- model[[paste("level",j)]]
+				e <- derivatives[[paste("entry",model$levels-j+1)]]
+				e1 <- activations[[paste("level",j)]]
+				e1 <- e1[2:length(e1)]
+				e2 <- activations[[paste("level",j-1)]]
+				for(k in (1:level$count)) {
+					node <- level$weights[[paste("node",k)]]
+					interval <- e[k]*e1[k]*(1-e1[k])
+					interval1 <- interval1+(interval*node[2:length(node)])
+					change <- -(level$step*interval*e2)
+					level$weights[[paste("node",k)]] <- (node+change)
+				}
+				derivatives[[paste("entry",model$levels-j+2)]] <- interval1
+				model[[paste("level",j)]] <- level
+			}
+		}
+		accuracy <- sum((train_label==nnpredict(model,train_data))*1)/length(train_label)
+		runtime <- c(runtime,list("iter_count" = iter_count,"error" = error,"accuracy" = accuracy))
+	}
+	results <- matrix(runtime,nrow=length(runtime)/3,ncol=3,byrow=TRUE)
+	object <- list("model" = model,"results" = results)
+	return(object)
+}
+
+activation <- function(x,w) {
+	return(1/(1+exp(-w*as.integer(unlist(x)))))
+}
+
+preprocess <- function(data) {
+	attr_info <- list()
+	for(i in 1:ncol(data))
+		if(!is.integer(data[1,i])) {
+			attr_info[[paste("level",i)]] <- unique(data[,i])
+			for(j in (1:nrow(data)))
+				data[j,i] <- grep(data[j,i], attr_info[[paste("level",i)]])
+		}
+	newList <- list("data" = data, "attr_info" = attr_info)
+	return(newList)
+}
+
+nnpredict <- function(model,test_data="",file_path="") {
+	if(file_path!="") {
+		data <- read.csv(file_path, header=TRUE, stringsAsFactors=FALSE)
+		test_label <- data[,ncol(data)]
+		data <- data[,1:ncol(data)-1]
+		newList <- preprocess(data)
+		test_data <- newList$data
+	}
+	label <- vector(,nrow(test_data))*1
+	for(i in (1:nrow(test_data))) {
+		activations <- list("level 1" = c(1,as.integer(test_data[i,])))
+		for(j in (2:model$levels)) {
+			level <- model[[paste("level",j)]]
+			a1 <- vector(,level$count+1)*1
+			a1[1] <- 1
+			for(k in (1:level$count))
+				c(a1,activation(activations[[paste("level",j-1)]], level$weights[[paste("node",k)]]))
+			activations[[paste("level",j)]] <- a1					
+		}
+		tmp <- activations[[paste("level",model$levels)]]
+		label[i] <- model$labels[which.max(tmp[2:length(tmp)])]
+	}
+	if(file_path!="") {
+		accuracy <- sum((test_label==label)*1)/length(test_label)
+		print(paste("The Recorded Accuracy is:",accuracy))
+	}
+	return(label)
+}
